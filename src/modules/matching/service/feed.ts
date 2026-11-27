@@ -50,6 +50,10 @@ export async function loadProfileHints(
   return profileHintsFromCounts(feedback.hideReasonCounts);
 }
 
+/**
+ * Hides, applications and closed jobs are dropped by readStoredMatches; the public
+ * lookup also returns open jobs only, so a closed job never becomes a card.
+ */
 async function cardsFor(
   scored: readonly ScoredRef[],
   locale: string,
@@ -77,11 +81,10 @@ export async function listMatchPage(
   if (!(await matchingPorts().hasCandidateProfile(userId))) return emptyPage(true);
   const now = input.now ?? new Date();
   const cursor = decodeMatchCursor(input.cursor);
-  const [list, profileHints] = await Promise.all([
-    getMatches(userId, { now }),
-    loadProfileHints(userId, now),
-  ]);
+  const feedback = await readFeedback(userId, now);
+  const list = await getMatches(userId, { now, feedback });
   const sliced = sliceShown(list.items, cursor, input.limit);
+  const profileHints = profileHintsFromCounts(feedback.hideReasonCounts);
   return {
     items: await cardsFor(sliced.page, input.locale),
     nextCursor: sliced.nextCursor,
@@ -127,11 +130,12 @@ export async function loadMatchScreen(
   }
   const now = input.now ?? new Date();
   const cursor = decodeMatchCursor(input.cursor);
-  const [list, dismissedIds, profileHints] = await Promise.all([
-    getMatches(userId, { now }),
+  const [feedback, dismissedIds] = await Promise.all([
+    readFeedback(userId, now),
     listDismissedJobIds(userId),
-    loadProfileHints(userId, now),
   ]);
+  const list = await getMatches(userId, { now, feedback });
+  const profileHints = profileHintsFromCounts(feedback.hideReasonCounts);
   const dismissed = new Set(dismissedIds);
   const jobs = await matchingPorts().listPublicJobsByIds(
     [...new Set([...list.items.map((item) => item.jobId), ...dismissedIds])],

@@ -30,7 +30,7 @@ Every request except `GET /health` needs `Authorization: Bearer <MATCHING_SERVIC
 | POST | `/v1/me/matches/:jobId/dismiss` | candidate | `{ action: "dismissed", reason? }`; limited per day |
 | GET | `/v1/users/:id/matches` | module | stored matches of a person (briefs, assistant) |
 | POST | `/v1/jobs/:jobId/match` | jobs | queue a recompute after publishing |
-| POST | `/v1/jobs/:jobId/compute` | module | score a job for candidates now |
+| POST | `/v1/jobs/:jobId/compute` | module | score a job for candidates now; answers `{ considered, written, ms }` (`ms` is new in v0.2.0) |
 | POST | `/v1/tasks/run-matching` | scheduler | work the recompute queue |
 
 Jobs asks the platform to queue a recompute today (`/api/internal/jobs/:id/match`); at integration its adapter points to `POST /v1/jobs/:jobId/match` here.
@@ -51,6 +51,22 @@ Scoring reads many tables in one pass (never writes them): jobs, skills and lang
 
 `HIDE_REASONS` is a copy of the platform's feedback rule list until feedback moves out.
 
+## When stored matches are recalculated
+
+A candidate's stored matches are reused until one of these happens:
+
+- the profile changed (`profileUpdatedAt` is later than the stored calculation);
+- the algorithm version changed (`ALGO_VERSION`);
+- the stored rows are older than 24 hours (`CACHE_MAX_AGE_MS`, was 6 hours).
+
+New jobs do not need a timer: they are appended to the stored matches of every suitable candidate through the queue (`matching_jobs` -> `computeMatchesForJob` -> `writeJobResults`).
+
+Hides, applications and closed jobs are applied when stored matches are read, not only when they are recomputed. `readStoredMatches` drops, in the same SQL query, every stored row whose job is no longer `published` (or whose company is suspended or rejected), that the viewer hid, whose company the viewer hid, or that the viewer has an application for that is not withdrawn (the same rules the hard filter uses at recompute). This holds for every consumer: the feed, the matches screen, the match of one job and `GET /v1/users/:id/matches`. None of these triggers a recalculation. The feed and the screen also keep only jobs the public job lookup still returns.
+
+Known cost: an empty result set is always treated as stale (there is no place to store an "empty calculation" marker without a migration), so a candidate with no suitable jobs is recalculated on every feed open. The cost counters below show how much this matters; whether to add a migration for the marker is the owner's decision.
+
+Cost counters: `computeMatches` returns `stats` (`prefiltered`, `jobsRead`, `written`, `ms`) and `computeMatchesForJob` returns `considered`, `written`, `ms`. Each call also logs one line (`matching.compute ...` / `matching.computeForJob ...`) with ids only.
+
 ## Packages inside
 
 - `.` — feed, compute, recalc, explain, `setMatchingPorts`
@@ -58,4 +74,4 @@ Scoring reads many tables in one pass (never writes them): jobs, skills and lang
 - `./ports` — `setMatchingPorts()`
 - `./server` — `createApp()` HTTP handler
 
-Depends on `@intgetion/kit` (v0.3.1), `@intgetion/taxonomy` (v0.3.0) and, for table definitions and types, `@intgetion/jobs`, `@intgetion/candidates`, `@intgetion/applications`, `@intgetion/users` (v0.1.1) by git tag.
+Depends on `@intgetion/kit` (v0.3.1), `@intgetion/taxonomy` (v0.3.0) and, for table definitions and types, `@intgetion/jobs`, `@intgetion/candidates`, `@intgetion/applications`, `@intgetion/users` (v0.1.1) by git tag. The planned bump of `@intgetion/jobs` to v0.1.3 was skipped: that tag is not pushed, so it cannot resolve; the dependency stays at v0.1.1 until it is.

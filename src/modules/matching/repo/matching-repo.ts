@@ -378,6 +378,77 @@ export interface JobWithSimilarity {
   titleSimilarity: number;
 }
 
+/**
+ * The only job columns scoring reads. description and the fts vector make up
+ * most of a row and are never needed here (database egress).
+ */
+export const JOB_SCORING_COLUMNS = {
+  id: jobs.id,
+  companyId: jobs.companyId,
+  title: jobs.title,
+  category: jobs.category,
+  sectors: jobs.sectors,
+  seniority: jobs.seniority,
+  status: jobs.status,
+  workFormat: jobs.workFormat,
+  employmentType: jobs.employmentType,
+  experienceMin: jobs.experienceMin,
+  experienceMax: jobs.experienceMax,
+  locationCountry: jobs.locationCountry,
+  countryRestrictions: jobs.countryRestrictions,
+  timezoneRequired: jobs.timezoneRequired,
+  workHoursStart: jobs.workHoursStart,
+  workHoursEnd: jobs.workHoursEnd,
+  minOverlapHours: jobs.minOverlapHours,
+  salaryMin: jobs.salaryMin,
+  salaryMax: jobs.salaryMax,
+  salaryCurrency: jobs.salaryCurrency,
+  salaryPeriod: jobs.salaryPeriod,
+  salaryBasis: jobs.salaryBasis,
+} as const;
+
+export type JobScoringRow = {
+  [K in keyof typeof JOB_SCORING_COLUMNS]: (typeof jobs.$inferSelect)[K];
+};
+
+/** Pure mapping from a jobs row to the scoring input; extra fields are ignored. */
+export function jobRowToScoring(
+  row: JobScoringRow,
+  skills: readonly JobSkillForScoring[],
+  languages: readonly JobLanguageForScoring[],
+): JobForScoring {
+  return {
+    jobId: row.id,
+    companyId: row.companyId,
+    title: row.title,
+    category: row.category,
+    sectors: row.sectors,
+    seniority: row.seniority,
+    status: row.status,
+    workFormat: row.workFormat,
+    employmentType: row.employmentType,
+    experienceMin: row.experienceMin,
+    experienceMax: row.experienceMax,
+    locationCountry: trimCode(row.locationCountry),
+    countryRestrictions:
+      row.countryRestrictions === null
+        ? null
+        : row.countryRestrictions.map((code) => code.trim()),
+    timezoneRequired: row.timezoneRequired,
+    workHoursStart:
+      row.workHoursStart === null ? null : hhmm(row.workHoursStart),
+    workHoursEnd: row.workHoursEnd === null ? null : hhmm(row.workHoursEnd),
+    minOverlapHours: row.minOverlapHours,
+    salaryMinMinor: row.salaryMin,
+    salaryMaxMinor: row.salaryMax,
+    salaryCurrency: trimCode(row.salaryCurrency),
+    salaryPeriod: row.salaryPeriod,
+    salaryBasis: row.salaryBasis,
+    skills: skills,
+    languages: languages,
+  };
+}
+
 export async function readJobs(
   jobIds: readonly string[],
   desiredTitles: readonly string[],
@@ -385,7 +456,7 @@ export async function readJobs(
   if (jobIds.length === 0) return [];
   const db = getDb();
   const jobRows = await db
-    .select()
+    .select(JOB_SCORING_COLUMNS)
     .from(jobs)
     .where(inArray(jobs.id, [...jobIds]));
   const skillRows = await db
@@ -435,36 +506,11 @@ export async function readJobs(
 
   return jobRows.map((row) => ({
     titleSimilarity: similarityByJob.get(row.id) ?? 0,
-    job: {
-      jobId: row.id,
-      companyId: row.companyId,
-      title: row.title,
-      category: row.category,
-      sectors: row.sectors,
-      seniority: row.seniority,
-      status: row.status,
-      workFormat: row.workFormat,
-      employmentType: row.employmentType,
-      experienceMin: row.experienceMin,
-      experienceMax: row.experienceMax,
-      locationCountry: trimCode(row.locationCountry),
-      countryRestrictions:
-        row.countryRestrictions === null
-          ? null
-          : row.countryRestrictions.map((code) => code.trim()),
-      timezoneRequired: row.timezoneRequired,
-      workHoursStart:
-        row.workHoursStart === null ? null : hhmm(row.workHoursStart),
-      workHoursEnd: row.workHoursEnd === null ? null : hhmm(row.workHoursEnd),
-      minOverlapHours: row.minOverlapHours,
-      salaryMinMinor: row.salaryMin,
-      salaryMaxMinor: row.salaryMax,
-      salaryCurrency: trimCode(row.salaryCurrency),
-      salaryPeriod: row.salaryPeriod,
-      salaryBasis: row.salaryBasis,
-      skills: skillsByJob.get(row.id) ?? [],
-      languages: languagesByJob.get(row.id) ?? [],
-    },
+    job: jobRowToScoring(
+      row,
+      skillsByJob.get(row.id) ?? [],
+      languagesByJob.get(row.id) ?? [],
+    ),
   }));
 }
 
@@ -506,24 +552,59 @@ export async function readFxRates(): Promise<FxRate[]> {
   }));
 }
 
+/**
+ * Stored matches still worth showing. Stored rows live up to 24 hours, so the
+ * user exclusions of the hard filter (score/hard-filter.ts) are applied again
+ * here, in the same query: the job must still be published by a company that
+ * is not suspended or rejected (as in prefilterJobIds), and it must not be
+ * hidden, of a hidden company, or applied to (an application that is not
+ * withdrawn). The definitions are the ones readFeedback uses.
+ */
 export async function readStoredMatches(
   userId: string,
 ): Promise<StoredMatchRow[]> {
   const rows = await getDb()
-    .select()
+    .select({
+      jobId: matchingResults.jobId,
+      score: matchingResults.score,
+      explain: matchingResults.explain,
+      // Only the flag, not the whole breakdown json (database egress).
+      lowData: sql<boolean>`coalesce((${matchingResults.breakdown}->>'lowData')::boolean, false)`,
+      computedAt: matchingResults.computedAt,
+      algoVersion: matchingResults.algoVersion,
+    })
     .from(matchingResults)
-    .where(eq(matchingResults.userId, userId));
-  return rows.map((row) => {
-    const breakdown = row.breakdown as { lowData?: boolean };
-    return {
-      jobId: row.jobId,
-      score: Number(row.score),
-      explain: row.explain as ExplainEntry[],
-      lowData: breakdown.lowData === true,
-      computedAt: row.computedAt,
-      algoVersion: row.algoVersion,
-    };
-  });
+    .innerJoin(jobs, eq(jobs.id, matchingResults.jobId))
+    .innerJoin(companies, eq(companies.id, jobs.companyId))
+    .where(
+      and(
+        eq(matchingResults.userId, userId),
+        eq(jobs.status, "published"),
+        sql`${companies.status} not in ('suspended', 'rejected')`,
+        sql`not exists (
+          select 1 from public.user_job_feedback f
+          where f.user_id = ${userId}
+            and (
+              (f.action = 'hidden' and f.job_id = ${jobs.id})
+              or (f.action = 'hidden_company' and f.company_id = ${jobs.companyId})
+            )
+        )`,
+        sql`not exists (
+          select 1 from public.applications a
+          where a.candidate_id = ${userId}
+            and a.job_id = ${jobs.id}
+            and a.status <> 'withdrawn'
+        )`,
+      ),
+    );
+  return rows.map((row) => ({
+    jobId: row.jobId,
+    score: Number(row.score),
+    explain: row.explain as ExplainEntry[],
+    lowData: row.lowData === true,
+    computedAt: row.computedAt,
+    algoVersion: row.algoVersion,
+  }));
 }
 
 export interface ResultWrite {

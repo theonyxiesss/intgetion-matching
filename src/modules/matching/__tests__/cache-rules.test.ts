@@ -11,7 +11,7 @@ import {
 import { candidate, context, job, NOW } from "./builders";
 
 describe("matching cache and cutoff", () => {
-  it("treats a cache as stale when it is empty, older than 6h, behind the profile, or on another algo version", () => {
+  it("treats a cache as stale when it is empty, older than 24h, behind the profile, or on another algo version", () => {
     const computedAt = new Date(NOW.getTime() - CACHE_MAX_AGE_MS);
     const fresh = {
       rows: [{ computedAt, algoVersion: ALGO_VERSION }],
@@ -38,6 +38,23 @@ describe("matching cache and cutoff", () => {
         rows: [{ computedAt, algoVersion: ALGO_VERSION + 1 }],
       }),
     ).toBe(false);
+  });
+
+  it("keeps stored matches for 24 hours", () => {
+    const hour = 60 * 60 * 1000;
+    const base = {
+      profileUpdatedAt: new Date(NOW.getTime() - 48 * hour),
+      now: NOW,
+    };
+    const rowAged = (hours: number) => [
+      {
+        computedAt: new Date(NOW.getTime() - hours * hour),
+        algoVersion: ALGO_VERSION,
+      },
+    ];
+    expect(CACHE_MAX_AGE_MS).toBe(24 * hour);
+    expect(isCacheFresh({ ...base, rows: rowAged(23) })).toBe(true);
+    expect(isCacheFresh({ ...base, rows: rowAged(25) })).toBe(false);
   });
 
   it("keeps scores at or above 0.55 and only the top 200", () => {

@@ -4,7 +4,7 @@
 import { ALGO_VERSION, SHOW_THRESHOLD } from "../score/assemble";
 
 /** A row exactly this old is still fresh; one millisecond older is not. */
-export const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+export const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const PREFILTER_LIMIT = 500;
 export const MATCH_STORE_LIMIT = 200;
 export const JOB_CANDIDATE_LIMIT = 2000;
