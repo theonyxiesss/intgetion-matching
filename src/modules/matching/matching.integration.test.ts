@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "@intgetion/kit";
+import { jobs } from "../../db";
+import {
+  jobRowToScoring,
+  readJobs,
+  readStoredMatches,
+  type JobScoringRow,
+} from "./repo/matching-repo";
 import {
   computeMatches,
   computeMatchesForJob,
@@ -465,5 +472,50 @@ describe("matching results", () => {
         from generate_series(1, 5000) n
       )
     `);
+  });
+});
+
+describe("light reads", () => {
+  it("readJobs yields the same scoring input as a full-row read", async () => {
+    const ids = [matchJobId, noSalaryJobId, grossJobId, tzJobId, nightJobId];
+    const light = await readJobs(ids, []);
+    const fullRows = await getDb()
+      .select()
+      .from(jobs)
+      .where(inArray(jobs.id, ids));
+    expect(light).toHaveLength(ids.length);
+    for (const row of light) {
+      const fullRow = fullRows.find((r) => r.id === row.job.jobId);
+      expect(fullRow).toBeDefined();
+      expect(row.job).toEqual(
+        jobRowToScoring(
+          fullRow as JobScoringRow,
+          row.job.skills,
+          row.job.languages,
+        ),
+      );
+    }
+  });
+
+  it("computeMatches output equals what readStoredMatches returns", async () => {
+    const now = new Date("2026-01-12T12:00:00Z");
+    const computed = await computeMatches(userId, { now });
+    const stored = await readStoredMatches(userId);
+    const byJob = new Map(stored.map((row) => [row.jobId, row]));
+    expect(stored).toHaveLength(computed.items.length);
+    for (const item of computed.items) {
+      expect(byJob.get(item.jobId)?.score).toBe(item.score);
+      expect(byJob.get(item.jobId)?.explain).toEqual(item.explain);
+    }
+    const lowDataFromBreakdown = await getDb().execute<{
+      job_id: string;
+      low: boolean;
+    }>(sql`
+      select job_id, coalesce((breakdown->>'lowData')::boolean, false) as low
+      from public.matching_results where user_id = ${userId}
+    `);
+    for (const row of lowDataFromBreakdown) {
+      expect(byJob.get(row.job_id)?.lowData).toBe(row.low);
+    }
   });
 });
