@@ -126,6 +126,7 @@ describe("light job reads", () => {
     repo.readJobs.mockResolvedValueOnce(jobsFrom(lightRows.map(full)));
     const fromFull = await computeMatches("u1", { now: NOW });
     expect(fromLight.items.length).toBeGreaterThan(0);
-    expect(fromLight).toEqual(fromFull);
+    expect(fromLight.items).toEqual(fromFull.items);
+    expect(fromLight.lowData).toEqual(fromFull.lowData);
   });
 });

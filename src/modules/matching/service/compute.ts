@@ -2,6 +2,7 @@
  * Matching v1 on the server (10.1). Reads the SQL prefilter, scores with
  * score/*, and stores the top 200 shown rows. No queue and no HTTP here.
  */
+import { logger } from "@intgetion/kit";
 import {
   prefilterCandidateIds,
   prefilterJobIds,
@@ -50,6 +51,22 @@ export interface MatchList {
   lowData: boolean;
 }
 
+/** Cost counters of one recompute (no personal data). */
+export interface ComputeStats {
+  prefiltered: number;
+  jobsRead: number;
+  written: number;
+  ms: number;
+}
+
+export type ComputedMatchList = MatchList & { stats: ComputeStats };
+
+function logCompute(userId: string, stats: ComputeStats): void {
+  logger.info(
+    `matching.compute user=${userId} prefiltered=${stats.prefiltered} jobsRead=${stats.jobsRead} written=${stats.written} ms=${stats.ms}`,
+  );
+}
+
 function emptyList(): MatchList {
   return { items: [], lowData: true };
 }
@@ -80,7 +97,7 @@ function toWrite(match: MatchResult): ResultWrite {
 async function scoreUser(
   candidate: CandidateForScoring,
   now: Date,
-): Promise<MatchResult[]> {
+): Promise<{ shown: MatchResult[]; prefiltered: number; jobsRead: number }> {
   const feedback = await readFeedback(candidate.userId, now);
   const jobIds = await prefilterJobIds(candidate, PREFILTER_LIMIT);
   const rows = await readJobs(jobIds, candidate.desiredTitles);
@@ -95,25 +112,50 @@ async function scoreUser(
     });
     if (!("excluded" in result)) scored.push(result);
   }
-  return selectShown(scored);
+  return {
+    shown: selectShown(scored),
+    prefiltered: jobIds.length,
+    jobsRead: rows.length,
+  };
 }
 
 export async function computeMatches(
   userId: string,
   options: { now?: Date } = {},
-): Promise<MatchList> {
+): Promise<ComputedMatchList> {
   computeCount += 1;
+  const startedAt = performance.now();
   const now = options.now ?? new Date();
   const profile = await readProfile(userId);
-  if (!profile) return emptyList();
-  const shown = await scoreUser(profile.candidate, now);
+  if (!profile) {
+    const stats = {
+      prefiltered: 0,
+      jobsRead: 0,
+      written: 0,
+      ms: Math.round(performance.now() - startedAt),
+    };
+    logCompute(userId, stats);
+    return { ...emptyList(), stats };
+  }
+  const { shown, prefiltered, jobsRead } = await scoreUser(
+    profile.candidate,
+    now,
+  );
   await replaceUserResults(
     userId,
     shown.map((match) => toWrite(match)),
   );
+  const stats = {
+    prefiltered,
+    jobsRead,
+    written: shown.length,
+    ms: Math.round(performance.now() - startedAt),
+  };
+  logCompute(userId, stats);
   return {
     items: shown.map(toItem),
     lowData: envelopeLowData(shown),
+    stats,
   };
 }
 
@@ -144,21 +186,30 @@ export async function getMatches(
       );
     return { items, lowData: envelopeLowData(stored) };
   }
-  return computeMatches(userId, { now });
+  const { items, lowData } = await computeMatches(userId, { now });
+  return { items, lowData };
 }
 
 export async function computeMatchesForJob(
   jobId: string,
   options: { now?: Date } = {},
-): Promise<{ considered: number; written: number }> {
+): Promise<{ considered: number; written: number; ms: number }> {
   computeCount += 1;
+  const startedAt = performance.now();
+  const done = (considered: number, written: number) => {
+    const ms = Math.round(performance.now() - startedAt);
+    logger.info(
+      `matching.computeForJob job=${jobId} considered=${considered} written=${written} ms=${ms}`,
+    );
+    return { considered, written, ms };
+  };
   const now = options.now ?? new Date();
   if (!(await readCompanyVisible(jobId))) {
-    return { considered: 0, written: 0 };
+    return done(0, 0);
   }
   const userIds = await prefilterCandidateIds(jobId, JOB_CANDIDATE_LIMIT);
   const [jobRow] = await readJobs([jobId], []);
-  if (!jobRow) return { considered: 0, written: 0 };
+  if (!jobRow) return done(0, 0);
   const similarities = await readTitleSimilarities(jobId, userIds);
   const fxRates = await readFxRates();
   const writes: (ResultWrite & { userId: string })[] = [];
@@ -183,5 +234,5 @@ export async function computeMatchesForJob(
     writes.push({ userId, ...toWrite(result) });
   }
   await writeJobResults(jobId, writes, drops);
-  return { considered: userIds.length, written: writes.length };
+  return done(userIds.length, writes.length);
 }

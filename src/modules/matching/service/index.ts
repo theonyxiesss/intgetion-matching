@@ -72,6 +72,8 @@ export {
   getMatches,
   resetComputeCount,
   takeComputeCount,
+  type ComputeStats,
+  type ComputedMatchList,
   type MatchItem,
   type MatchList,
 } from "./compute";
