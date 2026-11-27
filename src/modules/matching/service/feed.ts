@@ -50,11 +50,23 @@ export async function loadProfileHints(
   return profileHintsFromCounts(feedback.hideReasonCounts);
 }
 
+/**
+ * Stored matches live up to 24 hours, so a hide made after the calculation
+ * must be applied when the feed is read, not only when it is recomputed.
+ * Closed jobs drop out the same way: the public lookup returns open jobs only.
+ */
+type HiddenByViewer = {
+  hiddenJobIds: readonly string[];
+  hiddenCompanyIds: readonly string[];
+};
+
 async function cardsFor(
   scored: readonly ScoredRef[],
   locale: string,
+  hidden: HiddenByViewer,
 ): Promise<MatchCard[]> {
   if (scored.length === 0) return [];
+  const hiddenCompanies = new Set(hidden.hiddenCompanyIds);
   const jobs = await matchingPorts().listPublicJobsByIds(
     scored.map((item) => item.jobId),
     locale,
@@ -63,7 +75,7 @@ async function cardsFor(
   const cards: MatchCard[] = [];
   for (const item of scored) {
     const job = byId.get(item.jobId);
-    if (!job) continue;
+    if (!job || hiddenCompanies.has(job.company.id)) continue;
     cards.push({ job, score: item.score, explain: item.explain });
   }
   return cards;
@@ -77,13 +89,19 @@ export async function listMatchPage(
   if (!(await matchingPorts().hasCandidateProfile(userId))) return emptyPage(true);
   const now = input.now ?? new Date();
   const cursor = decodeMatchCursor(input.cursor);
-  const [list, profileHints] = await Promise.all([
+  const [list, feedback] = await Promise.all([
     getMatches(userId, { now }),
-    loadProfileHints(userId, now),
+    readFeedback(userId, now),
   ]);
-  const sliced = sliceShown(list.items, cursor, input.limit);
+  const hiddenJobs = new Set(feedback.hiddenJobIds);
+  const sliced = sliceShown(
+    list.items.filter((item) => !hiddenJobs.has(item.jobId)),
+    cursor,
+    input.limit,
+  );
+  const profileHints = profileHintsFromCounts(feedback.hideReasonCounts);
   return {
-    items: await cardsFor(sliced.page, input.locale),
+    items: await cardsFor(sliced.page, input.locale, feedback),
     nextCursor: sliced.nextCursor,
     lowData: list.lowData,
     profileHints,
@@ -127,12 +145,15 @@ export async function loadMatchScreen(
   }
   const now = input.now ?? new Date();
   const cursor = decodeMatchCursor(input.cursor);
-  const [list, dismissedIds, profileHints] = await Promise.all([
+  const [list, dismissedIds, feedback] = await Promise.all([
     getMatches(userId, { now }),
     listDismissedJobIds(userId),
-    loadProfileHints(userId, now),
+    readFeedback(userId, now),
   ]);
+  const profileHints = profileHintsFromCounts(feedback.hideReasonCounts);
   const dismissed = new Set(dismissedIds);
+  const hiddenJobs = new Set(feedback.hiddenJobIds);
+  const hiddenCompanies = new Set(feedback.hiddenCompanyIds);
   const jobs = await matchingPorts().listPublicJobsByIds(
     [...new Set([...list.items.map((item) => item.jobId), ...dismissedIds])],
     input.locale,
@@ -151,6 +172,13 @@ export async function loadMatchScreen(
   const countOf = { all: 0, new: 0, hidden: 0 };
   for (const job of jobs) {
     const hidden = dismissed.has(job.id);
+    // Hidden by the viewer after the stored calculation: not in All or New.
+    if (
+      !hidden &&
+      (hiddenJobs.has(job.id) || hiddenCompanies.has(job.company.id))
+    ) {
+      continue;
+    }
     const match = scored.get(job.id);
     if (!hidden && !match) continue;
     if (hidden) countOf.hidden += 1;

@@ -51,6 +51,22 @@ Scoring reads many tables in one pass (never writes them): jobs, skills and lang
 
 `HIDE_REASONS` is a copy of the platform's feedback rule list until feedback moves out.
 
+## When stored matches are recalculated
+
+A candidate's stored matches are reused until one of these happens:
+
+- the profile changed (`profileUpdatedAt` is later than the stored calculation);
+- the algorithm version changed (`ALGO_VERSION`);
+- the stored rows are older than 24 hours (`CACHE_MAX_AGE_MS`, was 6 hours).
+
+New jobs do not need a timer: they are appended to the stored matches of every suitable candidate through the queue (`matching_jobs` -> `computeMatchesForJob` -> `writeJobResults`).
+
+Hides and closed jobs are applied when the feed is read, not when it is recomputed. A job the viewer hid (or whose company they hid) after the calculation is dropped from the feed at once, and a job that closed disappears because the public job lookup returns open jobs only. Neither triggers a recalculation.
+
+Known cost: an empty result set is always treated as stale (there is no place to store an "empty calculation" marker without a migration), so a candidate with no suitable jobs is recalculated on every feed open. The cost counters below show how much this matters; whether to add a migration for the marker is the owner's decision.
+
+Cost counters: `computeMatches` returns `stats` (`prefiltered`, `jobsRead`, `written`, `ms`) and `computeMatchesForJob` returns `considered`, `written`, `ms`. Each call also logs one line (`matching.compute ...` / `matching.computeForJob ...`) with ids only.
+
 ## Packages inside
 
 - `.` — feed, compute, recalc, explain, `setMatchingPorts`

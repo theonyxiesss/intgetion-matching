@@ -1,6 +1,6 @@
 {
   "name": "@intgetion/matching",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Matching for INTGETION JOB LIST: candidate-job scoring with explanations, the match feed, dismissals and the recalculation queue.",
   "license": "UNLICENSED",
   "type": "module",
