@@ -9,6 +9,7 @@ import {
   readCompanyVisible,
   readFeedback,
   readFxRates,
+  readJobCompanyIds,
   readJobs,
   readProfile,
   readStoredMatches,
@@ -19,7 +20,11 @@ import {
 } from "../repo/matching-repo";
 import { ALGO_VERSION, scoreCandidate } from "../score/assemble";
 import { toPublicMatch } from "../score/explain";
-import type { CandidateForScoring, MatchResult } from "../score/types";
+import type {
+  CandidateForScoring,
+  FeedbackForScoring,
+  MatchResult,
+} from "../score/types";
 import {
   envelopeLowData,
   isCacheFresh,
@@ -159,9 +164,32 @@ export async function computeMatches(
   };
 }
 
+/**
+ * Hides and hidden companies are applied on every read: stored matches live
+ * up to 24 hours, so a hide made after the calculation must show at once.
+ */
+async function withoutHidden(
+  items: MatchItem[],
+  feedback: Pick<FeedbackForScoring, "hiddenJobIds" | "hiddenCompanyIds">,
+): Promise<MatchItem[]> {
+  const hiddenJobs = new Set(feedback.hiddenJobIds);
+  let kept = items.filter((item) => !hiddenJobs.has(item.jobId));
+  if (feedback.hiddenCompanyIds.length > 0 && kept.length > 0) {
+    const hiddenCompanies = new Set(feedback.hiddenCompanyIds);
+    const owners = await readJobCompanyIds(kept.map((item) => item.jobId));
+    const blocked = new Set(
+      owners
+        .filter((row) => hiddenCompanies.has(row.companyId))
+        .map((row) => row.jobId),
+    );
+    kept = kept.filter((item) => !blocked.has(item.jobId));
+  }
+  return kept;
+}
+
 export async function getMatches(
   userId: string,
-  options: { now?: Date } = {},
+  options: { now?: Date; feedback?: FeedbackForScoring } = {},
 ): Promise<MatchList> {
   const now = options.now ?? new Date();
   const profile = await readProfile(userId);
@@ -184,8 +212,13 @@ export async function getMatches(
         (left, right) =>
           right.score - left.score || left.jobId.localeCompare(right.jobId),
       );
-    return { items, lowData: envelopeLowData(stored) };
+    const feedback = options.feedback ?? (await readFeedback(userId, now));
+    return {
+      items: await withoutHidden(items, feedback),
+      lowData: envelopeLowData(stored),
+    };
   }
+  // A recompute already hard-filters hidden jobs and companies.
   const { items, lowData } = await computeMatches(userId, { now });
   return { items, lowData };
 }

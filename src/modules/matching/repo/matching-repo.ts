@@ -652,6 +652,17 @@ export async function writeJobResults(
   });
 }
 
+/** Company of each given job; used to drop matches of hidden companies. */
+export async function readJobCompanyIds(
+  jobIds: readonly string[],
+): Promise<{ jobId: string; companyId: string }[]> {
+  if (jobIds.length === 0) return [];
+  return getDb()
+    .select({ jobId: jobs.id, companyId: jobs.companyId })
+    .from(jobs)
+    .where(inArray(jobs.id, [...jobIds]));
+}
+
 export async function readCompanyVisible(jobId: string): Promise<boolean> {
   const [row] = await getDb()
     .select({ id: jobs.id })

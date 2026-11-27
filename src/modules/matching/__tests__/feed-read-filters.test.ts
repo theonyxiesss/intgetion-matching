@@ -18,6 +18,11 @@ vi.mock("../repo/matching-repo", async (importOriginal) => ({
   prefilterJobIds: vi.fn(),
   readFeedback: vi.fn(async () => state.feedback),
   listDismissedJobIds: vi.fn(async () => []),
+  readJobCompanyIds: vi.fn(async (ids: string[]) =>
+    state.publicJobs
+      .filter((job) => ids.includes(job.id))
+      .map((job) => ({ jobId: job.id, companyId: job.companyId })),
+  ),
   readProfile: vi.fn(),
   readStoredMatches: vi.fn(),
   replaceUserResults: vi.fn(),
@@ -25,12 +30,14 @@ vi.mock("../repo/matching-repo", async (importOriginal) => ({
 
 import {
   prefilterJobIds,
+  readFeedback,
   readProfile,
   readStoredMatches,
   replaceUserResults,
 } from "../repo/matching-repo";
 import { setMatchingPorts } from "../../../ports";
-import { listMatchPage, loadMatchScreen } from "../service/feed";
+import { getMatches } from "../service/compute";
+import { listMatchPage, loadMatchScreen, matchForJob } from "../service/feed";
 
 const stored = (jobId: string, score: number) => ({
   jobId,
@@ -108,5 +115,41 @@ describe("feed read path with a fresh 24h cache", () => {
     expect(screen.items.map((card) => card.job.id)).not.toContain(J_CLOSED);
     expect(prefilterJobIds).not.toHaveBeenCalled();
     expect(replaceUserResults).not.toHaveBeenCalled();
+  });
+
+  it("getMatches drops hidden jobs and hidden-company jobs from a fresh cache", async () => {
+    state.feedback = {
+      ...emptyFeedback(),
+      hiddenJobIds: [J_HIDDEN],
+      hiddenCompanyIds: ["c-hidden"],
+    };
+    const list = await getMatches("u1", { now: NOW });
+    expect(list.items.map((item) => item.jobId)).toEqual([J_KEEP, J_CLOSED]);
+    expect(prefilterJobIds).not.toHaveBeenCalled();
+    expect(replaceUserResults).not.toHaveBeenCalled();
+  });
+
+  it("does not read feedback again when it is passed in", async () => {
+    await getMatches("u1", { now: NOW, feedback: emptyFeedback() as never });
+    expect(readFeedback).not.toHaveBeenCalled();
+    await getMatches("u1", { now: NOW });
+    expect(readFeedback).toHaveBeenCalledTimes(1);
+  });
+
+  it("matchForJob returns no match for a hidden job or hidden company", async () => {
+    state.feedback = {
+      ...emptyFeedback(),
+      hiddenJobIds: [J_HIDDEN],
+      hiddenCompanyIds: ["c-hidden"],
+    };
+    // matchForJob reads the clock itself; pin it next to the stored rows.
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW });
+    try {
+      expect(await matchForJob("u1", J_HIDDEN)).toBeNull();
+      expect(await matchForJob("u1", J_CO_HIDDEN)).toBeNull();
+      expect((await matchForJob("u1", J_KEEP))?.jobId).toBe(J_KEEP);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
