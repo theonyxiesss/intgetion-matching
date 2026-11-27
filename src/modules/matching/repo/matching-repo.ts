@@ -552,6 +552,14 @@ export async function readFxRates(): Promise<FxRate[]> {
   }));
 }
 
+/**
+ * Stored matches still worth showing. Stored rows live up to 24 hours, so the
+ * user exclusions of the hard filter (score/hard-filter.ts) are applied again
+ * here, in the same query: the job must still be published by a company that
+ * is not suspended or rejected (as in prefilterJobIds), and it must not be
+ * hidden, of a hidden company, or applied to (an application that is not
+ * withdrawn). The definitions are the ones readFeedback uses.
+ */
 export async function readStoredMatches(
   userId: string,
 ): Promise<StoredMatchRow[]> {
@@ -566,7 +574,29 @@ export async function readStoredMatches(
       algoVersion: matchingResults.algoVersion,
     })
     .from(matchingResults)
-    .where(eq(matchingResults.userId, userId));
+    .innerJoin(jobs, eq(jobs.id, matchingResults.jobId))
+    .innerJoin(companies, eq(companies.id, jobs.companyId))
+    .where(
+      and(
+        eq(matchingResults.userId, userId),
+        eq(jobs.status, "published"),
+        sql`${companies.status} not in ('suspended', 'rejected')`,
+        sql`not exists (
+          select 1 from public.user_job_feedback f
+          where f.user_id = ${userId}
+            and (
+              (f.action = 'hidden' and f.job_id = ${jobs.id})
+              or (f.action = 'hidden_company' and f.company_id = ${jobs.companyId})
+            )
+        )`,
+        sql`not exists (
+          select 1 from public.applications a
+          where a.candidate_id = ${userId}
+            and a.job_id = ${jobs.id}
+            and a.status <> 'withdrawn'
+        )`,
+      ),
+    );
   return rows.map((row) => ({
     jobId: row.jobId,
     score: Number(row.score),
@@ -650,17 +680,6 @@ export async function writeJobResults(
         },
       });
   });
-}
-
-/** Company of each given job; used to drop matches of hidden companies. */
-export async function readJobCompanyIds(
-  jobIds: readonly string[],
-): Promise<{ jobId: string; companyId: string }[]> {
-  if (jobIds.length === 0) return [];
-  return getDb()
-    .select({ jobId: jobs.id, companyId: jobs.companyId })
-    .from(jobs)
-    .where(inArray(jobs.id, [...jobIds]));
 }
 
 export async function readCompanyVisible(jobId: string): Promise<boolean> {

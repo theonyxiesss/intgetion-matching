@@ -51,8 +51,8 @@ export async function loadProfileHints(
 }
 
 /**
- * Hides are applied inside getMatches. Closed jobs drop out here: the public
- * lookup returns open jobs only, so they never become cards.
+ * Hides, applications and closed jobs are dropped by readStoredMatches; the public
+ * lookup also returns open jobs only, so a closed job never becomes a card.
  */
 async function cardsFor(
   scored: readonly ScoredRef[],

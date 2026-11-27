@@ -519,3 +519,68 @@ describe("light reads", () => {
     }
   });
 });
+
+describe("read filters of stored matches", () => {
+  it("readStoredMatches drops hidden, hidden-company, applied and closed jobs in SQL", async () => {
+    const now = new Date("2026-01-12T12:00:00Z");
+    const computed = await computeMatches(userId, { now });
+    const appliedJobId = noSalaryJobId;
+    const withdrawnJobId = tzJobId;
+    const closedJobId = grossJobId;
+    for (const id of [
+      matchJobId,
+      hiddenJobId,
+      appliedJobId,
+      withdrawnJobId,
+      closedJobId,
+      dayJobId,
+    ]) {
+      expect(idsOf(computed.items)).toContain(id);
+    }
+    const db = getDb();
+    await db.execute(sql`
+      insert into public.user_job_feedback(user_id, job_id, company_id, action)
+      values
+        (${userId}, ${matchJobId}, ${companyId}, 'hidden'),
+        (${userId}, ${hiddenJobId}, ${hiddenCompanyId}, 'hidden_company'),
+        (${otherId}, ${dayJobId}, ${companyId}, 'hidden')
+    `);
+    await db.execute(sql`
+      insert into public.applications(job_id, candidate_id, status)
+      values
+        (${appliedJobId}, ${userId}, 'applied'),
+        (${withdrawnJobId}, ${userId}, 'withdrawn')
+    `);
+    await db.execute(sql`
+      update public.jobs set status = 'closed' where id = ${closedJobId}
+    `);
+    try {
+      const stored = idsOf(await readStoredMatches(userId));
+      expect(stored).not.toContain(matchJobId);
+      expect(stored).not.toContain(hiddenJobId);
+      expect(stored).not.toContain(appliedJobId);
+      expect(stored).not.toContain(closedJobId);
+      // A withdrawn application does not hide the job; others stay.
+      expect(stored).toContain(withdrawnJobId);
+      // Another user's hide does not reach this user's rows.
+      expect(stored).toContain(dayJobId);
+      expect(stored).toHaveLength(computed.items.length - 4);
+      // A cache hit serves exactly the filtered rows, with no recompute.
+      resetComputeCount();
+      const list = await getMatches(userId);
+      expect(takeComputeCount()).toBe(0);
+      expect(idsOf(list.items).sort()).toEqual([...stored].sort());
+    } finally {
+      await db.execute(sql`
+        delete from public.user_job_feedback
+        where user_id in (${userId}, ${otherId})
+      `);
+      await db.execute(sql`
+        delete from public.applications where candidate_id = ${userId}
+      `);
+      await db.execute(sql`
+        update public.jobs set status = 'published' where id = ${closedJobId}
+      `);
+    }
+  });
+});

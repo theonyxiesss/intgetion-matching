@@ -9,7 +9,6 @@ import {
   readCompanyVisible,
   readFeedback,
   readFxRates,
-  readJobCompanyIds,
   readJobs,
   readProfile,
   readStoredMatches,
@@ -102,8 +101,9 @@ function toWrite(match: MatchResult): ResultWrite {
 async function scoreUser(
   candidate: CandidateForScoring,
   now: Date,
+  given?: FeedbackForScoring,
 ): Promise<{ shown: MatchResult[]; prefiltered: number; jobsRead: number }> {
-  const feedback = await readFeedback(candidate.userId, now);
+  const feedback = given ?? (await readFeedback(candidate.userId, now));
   const jobIds = await prefilterJobIds(candidate, PREFILTER_LIMIT);
   const rows = await readJobs(jobIds, candidate.desiredTitles);
   const fxRates = await readFxRates();
@@ -126,7 +126,7 @@ async function scoreUser(
 
 export async function computeMatches(
   userId: string,
-  options: { now?: Date } = {},
+  options: { now?: Date; feedback?: FeedbackForScoring } = {},
 ): Promise<ComputedMatchList> {
   computeCount += 1;
   const startedAt = performance.now();
@@ -145,6 +145,7 @@ export async function computeMatches(
   const { shown, prefiltered, jobsRead } = await scoreUser(
     profile.candidate,
     now,
+    options.feedback,
   );
   await replaceUserResults(
     userId,
@@ -165,28 +166,11 @@ export async function computeMatches(
 }
 
 /**
- * Hides and hidden companies are applied on every read: stored matches live
- * up to 24 hours, so a hide made after the calculation must show at once.
+ * Stored matches are reused for 24 hours. Hidden jobs, hidden companies,
+ * applied-to and no-longer-published jobs are dropped by readStoredMatches in
+ * SQL, so a cache hit costs no extra query. `feedback`, when the caller has
+ * already read it, is only used by a recompute (saves reading it twice).
  */
-async function withoutHidden(
-  items: MatchItem[],
-  feedback: Pick<FeedbackForScoring, "hiddenJobIds" | "hiddenCompanyIds">,
-): Promise<MatchItem[]> {
-  const hiddenJobs = new Set(feedback.hiddenJobIds);
-  let kept = items.filter((item) => !hiddenJobs.has(item.jobId));
-  if (feedback.hiddenCompanyIds.length > 0 && kept.length > 0) {
-    const hiddenCompanies = new Set(feedback.hiddenCompanyIds);
-    const owners = await readJobCompanyIds(kept.map((item) => item.jobId));
-    const blocked = new Set(
-      owners
-        .filter((row) => hiddenCompanies.has(row.companyId))
-        .map((row) => row.jobId),
-    );
-    kept = kept.filter((item) => !blocked.has(item.jobId));
-  }
-  return kept;
-}
-
 export async function getMatches(
   userId: string,
   options: { now?: Date; feedback?: FeedbackForScoring } = {},
@@ -212,14 +196,13 @@ export async function getMatches(
         (left, right) =>
           right.score - left.score || left.jobId.localeCompare(right.jobId),
       );
-    const feedback = options.feedback ?? (await readFeedback(userId, now));
-    return {
-      items: await withoutHidden(items, feedback),
-      lowData: envelopeLowData(stored),
-    };
+    return { items, lowData: envelopeLowData(stored) };
   }
-  // A recompute already hard-filters hidden jobs and companies.
-  const { items, lowData } = await computeMatches(userId, { now });
+  // A recompute hard-filters the same exclusions.
+  const { items, lowData } = await computeMatches(userId, {
+    now,
+    feedback: options.feedback,
+  });
   return { items, lowData };
 }
 

@@ -30,7 +30,7 @@ Every request except `GET /health` needs `Authorization: Bearer <MATCHING_SERVIC
 | POST | `/v1/me/matches/:jobId/dismiss` | candidate | `{ action: "dismissed", reason? }`; limited per day |
 | GET | `/v1/users/:id/matches` | module | stored matches of a person (briefs, assistant) |
 | POST | `/v1/jobs/:jobId/match` | jobs | queue a recompute after publishing |
-| POST | `/v1/jobs/:jobId/compute` | module | score a job for candidates now |
+| POST | `/v1/jobs/:jobId/compute` | module | score a job for candidates now; answers `{ considered, written, ms }` (`ms` is new in v0.2.0) |
 | POST | `/v1/tasks/run-matching` | scheduler | work the recompute queue |
 
 Jobs asks the platform to queue a recompute today (`/api/internal/jobs/:id/match`); at integration its adapter points to `POST /v1/jobs/:jobId/match` here.
@@ -61,7 +61,7 @@ A candidate's stored matches are reused until one of these happens:
 
 New jobs do not need a timer: they are appended to the stored matches of every suitable candidate through the queue (`matching_jobs` -> `computeMatchesForJob` -> `writeJobResults`).
 
-Hides and closed jobs are applied when the feed is read, not when it is recomputed. A job the viewer hid (or whose company they hid) after the calculation is dropped from the feed at once, and a job that closed disappears because the public job lookup returns open jobs only. Neither triggers a recalculation.
+Hides, applications and closed jobs are applied when stored matches are read, not only when they are recomputed. `readStoredMatches` drops, in the same SQL query, every stored row whose job is no longer `published` (or whose company is suspended or rejected), that the viewer hid, whose company the viewer hid, or that the viewer has an application for that is not withdrawn (the same rules the hard filter uses at recompute). This holds for every consumer: the feed, the matches screen, the match of one job and `GET /v1/users/:id/matches`. None of these triggers a recalculation. The feed and the screen also keep only jobs the public job lookup still returns.
 
 Known cost: an empty result set is always treated as stale (there is no place to store an "empty calculation" marker without a migration), so a candidate with no suitable jobs is recalculated on every feed open. The cost counters below show how much this matters; whether to add a migration for the marker is the owner's decision.
 
@@ -74,4 +74,4 @@ Cost counters: `computeMatches` returns `stats` (`prefiltered`, `jobsRead`, `wri
 - `./ports` — `setMatchingPorts()`
 - `./server` — `createApp()` HTTP handler
 
-Depends on `@intgetion/kit` (v0.3.1), `@intgetion/taxonomy` (v0.3.0) and, for table definitions and types, `@intgetion/jobs`, `@intgetion/candidates`, `@intgetion/applications`, `@intgetion/users` (v0.1.1) by git tag.
+Depends on `@intgetion/kit` (v0.3.1), `@intgetion/taxonomy` (v0.3.0) and, for table definitions and types, `@intgetion/jobs`, `@intgetion/candidates`, `@intgetion/applications`, `@intgetion/users` (v0.1.1) by git tag. The planned bump of `@intgetion/jobs` to v0.1.3 was skipped: that tag is not pushed, so it cannot resolve; the dependency stays at v0.1.1 until it is.
